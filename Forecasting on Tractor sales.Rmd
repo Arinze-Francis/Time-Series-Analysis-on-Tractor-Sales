@@ -1,0 +1,324 @@
+---
+title: "Time series ARIMA model on tactor sales"
+author: "Arinze Francis"
+date: '2022-06-16'
+output: html_document
+---
+
+```{r}
+rm(list=ls())
+options(scipen=999,digits=4)
+rm
+
+
+```
+
+# Load R packages
+
+```{r}
+library(readxl)
+library(tidyquant)
+library(tidyverse)
+library(lubridate)
+library(xts)
+library(quantmod)
+library(tseries)
+library(zoo)
+library(ggplot2)
+library(fpp2)
+library(data.table)
+library(forecast)
+
+```
+
+# Dataset loading
+
+```{r}
+data <- read.csv("Tractor-Sales.csv")
+data
+str(data)
+plot(data$Number.of.Tractor.Sold, xlab="year", type ="l", col="palegreen4", main="tractor sales and year")
+
+```
+
+
+# Converting to time series class and plotting the time series data
+
+
+```{r}
+data_ts <- ts(data$Number.of.Tractor.Sold, start = c(2003,1), frequency = 12)
+data_ts
+class(data_ts)
+plot(data_ts, xlab="years", ylab="tractor sales", main="Tractor sales vs Year",col="orange",type = "l", lwd=2)
+
+
+
+# Observation of the plot:
+# 1. Values of the data are stored in correct order and no missing data.
+# 2. There is an upward trend. On the average, tractor sales is going up. Sales are increasing in numbers, implying presence of trend component.
+# 3. Intra-year stable fluctuations are indicative of seasonal components. As trend increases, fluctuations are also increasing. Indicative of multiplicative seasonality.
+
+```
+
+# to get the seasonality better
+
+
+```{r}
+
+ggseasonplot(data_ts, year.labels = T, year.labels.left = T) +ylab("degree") +ggtitle("Seasonal Plot Tractor sales Data")
+
+# Observation:1) as the year goes by, sales increases - meaning trend, 2) There is a common seasonality pattern across years but not identical ( a bump in April 2014).
+
+ggseasonplot(data_ts, polar = T) +ylab("degree") +ggtitle("Polar plot: Seasonal Tractor sales Data") # a polar visualization
+
+# Note; if the plot is circular, then there is no seasonality. Again, if it circular but the center is shifting towards the wrong place, then there is a seasonality pattern the same across the whole years.
+
+monthplot(data_ts)
+# Average sales are higher in the month of July and August. There were some irregularities in the month of April and Febrauary (the bump).
+
+```
+
+# Decomposition of plot: Mutiplicative Seasonal correction/adjustment
+
+```{r}
+
+data_decompose <- decompose(data_ts, type = "multiplicative")
+data_decompose
+# On the seasonal part in January for all years, you are going to sell 82% of your annual trend (and 18% less) and etc. In July, you sell about 23% more, in May, 18% more.
+
+# On the random part, 2004, Jan was about 4% left than where it should be after accounting for trend and seasonality.Jan 2002, about 1% more than my trend and seasonality forecast.
+
+plot(data_decompose)
+# the trend is incresing though there is a flattening in 2007 and 2008, 2011 ans 2012
+# The seasonal part is repeating (Note the .008 and 1 unit, maybe multiplicative)
+# On random: My unpredictable error is about 10% (o.90). In the future, i don't know what the number will be, but my best guess is in the middle (1).
+
+```
+
+# Splittig data into training and test sets and test the last 2 years
+
+```{r}
+
+data_train <- window(data_ts, start=c(2003,1),end=c(2012,12), freq=12)
+data_train
+
+data_test <- window(data_ts, start=c(2013,1), freq=12)
+data_test
+
+
+autoplot(data_train, series = "Train") + autolayer(data_test, series = "Test") + ggtitle("Tractor train and test set") +xlab("year") +ylab("sales")+guides(colour=guide_legend(title = "Forecast"))
+
+```
+
+
+# Data Forecasting Methods using Random walk Drift 
+
+```{r}
+# Random Walk drift method forecasts next period value as per the amount of change over time (called the drift). It evaluates the average change seen in past data.
+data_decompose_train_log <-stl(log10(data_train),s.window = "p")
+data_decompose_train_log
+# seasonal component is the same, trend is increasing, remainder remains unpredictable)
+
+
+# Data Forecast with Random walk drift
+data_train_stl <- forecast(data_decompose_train_log, method = "rwdrift",h=24) #h=24 means how long which is 2 years (the test set years), 24months, Lower 80% and higher 95% points etc
+plot(data_train_stl) #forecast on the log scale
+
+
+## Accuracy Measure using Random walk drift
+
+Vec_2 <- 10^(cbind(log10(data_test), as.data.frame(forecast(data_decompose_train_log, method = "rwdrift",h=24))[,1]))
+Vec_2
+# I am off by 24 units,
+# 430 (forecast) +- 1.96 * 53 (RMSE)
+
+ts.plot(Vec_2, col=c("blue", "red"), main = "Tractor Sales Actual vs Forecast")
+#test is blue, forecast is red
+
+# There was slight underprediction. There was something that lifted my sales a little bit above the historic trend. Something that was not explained by the trend of the past but I am not that far off as i have picked up a trend and seasonality.
+
+
+# how good the forecast is?
+RMSE2 <- round(sqrt(sum(((Vec_2[,1]-Vec_2[,2])^2)/length(Vec_2[,1]))),4)# root mean square error ie standard deviation forecast
+MAPE2 <- round(mean(abs(Vec_2[,1]-Vec_2[,2])/Vec_2[,1]),4)# mean absolute percentage
+
+
+paste("Accuracy measures: RMSE:", RMSE2, "and MAPE:", MAPE2 )
+
+#Interpretion from the ts.plot: I am on average of about 6.9% away from the truth.
+# RMSE: whatever i forecast, + or - 53.56 of that, I am above 68% of covering.
+
+```
+
+
+# Data forecasting methods using Holt's Winter
+
+```{r}
+
+ 
+data_train_hw <- hw(data_train, seasonal = "multiplicative")
+
+
+plot(forecast(data_train_hw, h=24))
+
+
+# Accuracy measures using HW
+
+vec <- cbind(data_test,as.data.frame(forecast(data_train_hw, h=24))[,1])
+vec
+ts.plot(vec, col=c("blue", "red"), main = "Tractor Sales Actual vs Forecast")
+# still under predicted.
+
+
+# how good the forecast is?
+
+RMSE1 <- round(sqrt(sum(((vec[,1]-vec[,2])^2)/length(vec[,1]))),4)
+MAPE1 <- round(mean(abs(vec[,1]-vec[,2])/vec[,1]),4)
+
+paste("Accuracy measures: RMSE:", RMSE1, "and MAPE:", MAPE1 )
+
+
+
+```
+
+
+# Data Forecasting Using ARIMA methods
+
+# To check for stationarity
+
+```{r}
+
+acf(data_ts)
+# it is not stationary (auto correlation because the spikes cross above the blue lines)
+
+pacf(data_ts)
+# partial okay as the spikes are not much
+
+adf.test(data_ts) #p-value should be less than 0.05
+
+
+# Converting non-stationary data to stationary data
+
+new_arima <- auto.arima(data_ts, d=1, D=1,stepwise = F, approximation = F, trace = T) #d=1 means seasonal and trend time series
+new_arima
+# The best model has the lowest aic
+
+# To check if the new model is stationary
+
+acf(ts(new_arima$residuals))
+
+pacf(ts(new_arima$residuals))
+# also fine
+
+
+
+
+
+
+```
+
+# Tractor Sales Forecasing
+
+```{r}
+
+data_forecast <- forecast(new_arima, level = c(95), h=10*12)
+data_forecast
+# the Lo 95 and high 95 is the confidence level, if it is low, it will be 536, if high, it  will be 601. It is safe to go with the minimum.
+
+
+plot(data_forecast, main = "Forecasted Tractor Sales for the next 10 years", col="orange")
+#  Interpretation: sales will keep growing (a trend) and also captures the seasonality and ARIMA model fits the best according to our end sample statistics and we use to form forecast.
+
+```
+
+
+# Validation of the model
+
+```{r}
+
+Box.test(data_forecast$residuals, lag =20, type = "Ljung-Box")
+# p values less than 0.5, sqrt (sigma^2)
+
+print(summary(data_forecast))
+checkresiduals(data_forecast)
+
+```
+# Plotting real vs  Fitted Values
+
+
+```{r}
+
+
+ts.plot(new_arima$x, new_arima$fitted, col=1:2, gpars = list(xlab = "Years", ylab="Tractor Sales", main= "Real vs Fitted Values"))
+
+
+
+```
+
+
+# Data Forcast using Seasonal Naive Method
+
+```{r}
+
+data_naive <- snaive(data_ts, level = c(95), h = 10*12)
+data_naive
+print(summary(data_naive))  # resdiual sd : 50.9462
+checkresiduals(data_naive)
+
+```
+
+
+
+# Data Forcast using Holt's winter (Exponential smoothing) Method
+
+```{r}
+
+data_ets <- hw(data_ts, level = c(95),  h=24) #seasonal =c("multiplicative)
+data_ets
+print(summary(data_ets))  # resdiual sd : 23.9
+checkresiduals(data_ets)
+
+```
+
+
+# Recommendation and Conclusion:
+
+Tractor sales will keep growing upward (a trend) and it also captures the seasonality and ARIMA model fits the best according to our end sample statistics and we use to form forecast.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
